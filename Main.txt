@@ -1,0 +1,128 @@
+############# main program #############
+rm(list=ls())
+library(rNMF)           ######## for NMF
+library(akmeans)       ######## for K-means using cosine similarity
+library(lsa)           ######## for cosine similarity
+################################ Data inputs and source files ################
+source("C:/HeteRS/EJOR/Revision-2/HeteRec/Dataset-2/Functions.txt")
+source("C:/HeteRS/EJOR/Revision-2/HeteRec/Dataset-2/evaluation_measures.txt")
+load("C:/HeteRS/EJOR/Revision-2/HeteRec/Dataset-2/song_detail_mat.RData")
+#num_dim <- c(5, 10, 20, 40, 60, 100, 150)    ############ from the paper Yu et al. (2014), for this dataset
+#num_clus <- c(2, 10, 20, 40, 100, 200, 400)   ############ change the number of user cluters for results
+num_iter <- 100  ############# maximum number of iterations for SGD
+sample_rate <- 1e-5   ######## from the paper Yu et al. (2014)
+num_path <- 3     ####### symmetric meta-paths
+lambda <- 0.1     ###### regularization parameter, from Yu et al. (2014)
+alpha <- 0.01     ###### learning rate for SGD
+epsilon <- 0.0001  ##### stopping criteria for SGD
+#############################
+num_dim <- 60
+num_clus <- 40
+for(num_data in 1:5)
+{
+file_name <- paste("C:/HeteRS/EJOR/Revision-2/HeteRec/Dataset-2/data",num_data,".RData",sep="")
+load(file_name)   ################ for various train-test pairs
+if(num_data==1)
+{
+R <- train1     ###### training data
+testmat <- test1  ###### testing data
+}
+if(num_data==2)
+{
+R <- train2     ###### training data
+testmat <- test2  ###### testing data
+}
+if(num_data==3)
+{
+R <- train3     ###### training data
+testmat <- test3  ###### testing data
+}
+if(num_data==4)
+{
+R <- train4     ###### training data
+testmat <- test4  ###### testing data
+}
+if(num_data==5)
+{
+R <- train5     ###### training data
+testmat <- test5  ###### testing data
+}
+cat("---------------------------------------------------------------\n")
+cat("----------------Results for Data -", num_data, "---------------\n")
+cat("---------------------------------------------------------------\n")
+#####################################
+for(ndim in num_dim)
+{
+  feature_mat <- interest_diffuse(R, salbum, ndim)
+  user_mat_album <- feature_mat$user_feature
+  item_mat_album <- feature_mat$item_feature
+
+  feature_mat <- interest_diffuse(R, sartist, ndim)
+  user_mat_artist <- feature_mat$user_feature
+  item_mat_artist <- feature_mat$item_feature
+
+  feature_mat <- interest_diffuse(R, sgenre, ndim)
+  user_mat_genre <- feature_mat$user_feature
+  item_mat_genre <- feature_mat$item_feature
+
+  user_mat <- list(user_mat_album, user_mat_artist, user_mat_genre)
+  item_mat <- list(item_mat_album, item_mat_artist, item_mat_genre)
+
+  cat("----------------For", ndim, "number of dimensions---------------\n")
+  for(nclus in num_clus)
+  {
+    res_clus <- cluster_users(R, ndim, nclus)
+    user_mem <- res_clus$userclustermem
+    user_center_sim <- res_clus$userclustersim
+    user_center_sim[which(is.nan(user_center_sim))] <- 0
+  
+    clus_theta <- matrix(0,nclus,num_path)
+    rownames(clus_theta) <- paste("C",1:nclus,sep="")
+    colnames(clus_theta) <- paste("Theta-",1:num_path,sep="")
+    for(i in 1:nclus)
+    {
+      theta <- runif(3)
+      user_list <- names(which(user_mem[,i]==1))    #### for ith cluster
+      if(length(user_list)>0)
+      {
+        clus_theta[i,] <- sgd_param_opt(R, user_list, theta, num_iter, sample_rate, num_path, user_mat, item_mat, lambda, alpha, epsilon)
+      }
+    }
+###################################
+    scoremat <- R
+    scoremat[,] <- 0
+    R_hat_album <- user_mat_album %*% t(item_mat_album)
+    R_hat_artist <- user_mat_artist %*% t(item_mat_artist)
+    R_hat_genre <- user_mat_genre %*% t(item_mat_genre)
+    #####################
+    for(i in 1:nclus)
+    {
+      res <- (clus_theta[i,1]*R_hat_album + clus_theta[i,2]*R_hat_artist + clus_theta[i,3]*R_hat_genre)
+      for(j in 1:ncol(res))
+      {
+        res[,j] <- user_center_sim[,i]*res[,j]
+      }
+      scoremat <- scoremat + res
+    }
+    ####################
+    scoremat <- scoremat*(1-R)
+    recommendmat <- matrix(0,nrow(scoremat),10)
+    rownames(recommendmat) <- rownames(scoremat)
+    for(i in 1:nrow(scoremat))
+    {
+      recommendmat[i,] <- names(sort(scoremat[i,],decreasing=TRUE))[1:10]
+    }
+    cusers <- intersect(rownames(recommendmat),rownames(testmat))
+    recommendmat <- recommendmat[cusers,]
+    testdmat <- testmat[cusers,]
+    cat("--------Results for",nclus,"number of cluster:-----------\n")
+    cat("--------ARHR----------\n")
+    print(arhr_k(recommendmat,testmat))
+    cat("--------MAP----------\n")
+    print(map_k(recommendmat,testmat))
+    cat("--------AR----------\n")
+    print(recall_k(recommendmat,testmat))
+    paste("----------------------------------------")
+  }
+}
+}
