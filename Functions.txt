@@ -1,0 +1,125 @@
+########################### functions ############
+cluster_users <- function(mat, ndim, k)
+{
+  user_mat <- rnmf(mat, ndim, quiet=TRUE, showprogress=FALSE)$W
+  user_mem <- matrix(0,nrow(user_mat),length(paste("C",1:k,sep="")))  #### for storing the membership of users to a cluster
+  rownames(user_mem) <- rownames(user_mat) 
+  colnames(user_mem) <- paste("C",1:k,sep="")
+  user_center_sim <- user_mem   #### for storing the similairty of users to cluster centers
+  set.seed(2712)
+  res <- norm.sim.ksc(quick.norm(user_mat,1),k,iter.max = 100)   ####### k-means clustering of users using cosine measure
+  clus_cent <- res$centers  #### each row of the matrix is the cluster center
+  rownames(clus_cent) <- paste("C",1:k,sep="")
+  for(i in 1:k)
+  {
+    user_center_sim[,i] <- cosine(clus_cent[i,],t(user_mat))         ###### value ranges from -1 to 1
+  }
+  for(i in 1:k)
+  {
+    user_mem[which(res$cluster==i),i] <- 1
+  }
+  return(list(userclustermem=user_mem,userclustersim=user_center_sim))  #### return two matrices userclustermem and userclustersim
+}
+####################################################
+interest_diffuse <- function(useritem_mat, itemprop_mat, ndim)
+{
+  itempropitem_mat <- itemprop_mat %*% t(itemprop_mat)
+  R_bar <- useritem_mat
+  R_bar[,] <- 0
+  for(i in 1:ncol(R_bar))
+  {
+    R_bar[,i] <- rowSums((2*useritem_mat*itempropitem_mat[i,])/(itempropitem_mat[i,i]+diag(itempropitem_mat)))
+  }
+  res <- rnmf(R_bar, ndim, quiet=TRUE, showprogress=FALSE)
+  U_cap <- res$W
+  V_cap <- t(res$H)
+  return(list(user_feature=U_cap, item_feature=V_cap))
+}
+##############################
+train_batch <- function(user_list, R, sample_rate)
+{
+  R_clus <- R[user_list,]
+  A <- R_clus
+  B <- 1 - R_clus
+  if(length(user_list)>1)
+  {
+    tot_samples <- sum(rowSums(A)*rowSums(B))
+  }else
+  {
+    tot_samples <- sum(A)*sum(B)
+  }
+  train_samples <- ceiling(sample_rate*tot_samples)
+  fts <- matrix(0,train_samples,3)
+  colnames(fts) <- c("user","eA","eB")
+  for(i in 1:nrow(fts))
+  {
+    u_i <- sample(user_list,1,replace=FALSE)
+    if(length(user_list)>1)
+    {
+      e_a <- sample(names(which(A[u_i,]>0)),1,replace=FALSE)
+      e_b <- sample(names(which(B[u_i,]>0)),1,replace=FALSE)
+    }else
+    {
+      e_a <- sample(names(which(A>0)),1,replace=FALSE)
+      e_b <- sample(names(which(B>0)),1,replace=FALSE)
+    }
+    fts[i,] <- c(u_i,e_a,e_b)
+  }
+  return(fts)
+}
+##############################
+r_hat <- function(num_path, theta, user_mat, item_mat, u_i, e_a, e_b)
+{
+  val <- 0
+  for(r in 1:num_path)
+  {
+    val <- val + theta[r]*sum(user_mat[[r]][u_i,] * (item_mat[[r]][e_a,]-item_mat[[r]][e_b,]))
+  }
+  return(val)
+}
+############################
+grad_r_hat <- function(num_path, user_mat, item_mat, u_i, e_a, e_b)
+{
+  res <- NULL
+  for(q in 1:num_path)
+  {
+    res <- c(res, sum(user_mat[[q]][u_i,]*(item_mat[[q]][e_a,]-item_mat[[q]][e_b,])))
+  }
+  return(res)
+}
+############################
+grad_val_point <- function(num_path, theta, user_mat, item_mat, u_i, e_a, e_b)
+{
+  x <- r_hat(num_path, theta, user_mat, item_mat, u_i, e_a, e_b)
+  y <- grad_r_hat(num_path, user_mat, item_mat, u_i, e_a, e_b)
+  gval <- (exp(-x)/(1+exp(-x)))*y
+  return(gval)
+}
+############################
+grad_val_batch <- function(sample_mat, num_path, theta, user_mat, item_mat)
+{
+  u_i <- sample_mat[,"user"]
+  e_a <- sample_mat[,"eA"]
+  e_b <- sample_mat[,"eB"]
+  bval <- grad_val_point(num_path, theta, user_mat, item_mat, u_i, e_a, e_b)
+  return(bval)
+}
+#################################
+sgd_param_opt <- function(R, user_list, theta, num_iter, sample_rate, num_path, user_mat, item_mat, lambda, alpha, epsilon)
+{
+  for(p in 1:num_iter)
+  {
+    sample_mat <- train_batch(user_list, R, sample_rate)
+    x <- grad_val_batch(sample_mat, num_path, theta, user_mat, item_mat)
+    x[which(is.na(x))] <- 0
+    grad_val <- (lambda*theta) - x
+    theta <- theta - (alpha*grad_val)
+    theta[which(theta<0)] <- 0
+    if(all(abs(alpha*grad_val)<epsilon))
+    {
+      break
+    }
+  }
+  return(theta)
+}
+################################
